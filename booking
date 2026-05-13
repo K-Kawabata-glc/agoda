@@ -1,0 +1,167 @@
+# 🏨 Agoda 料金自動監視ツール
+
+Agodaで予約した料金より安くなったら自動でメール通知します。
+**GitHub Actions（無料）** で動くため、PCを起動したままにする必要はありません。
+
+---
+
+## 📁 ファイル構成
+
+```
+agoda_monitor/
+├── checker.py              # メインスクリプト
+├── bookings.json           # 監視する予約リスト（編集する）
+├── prices_history.json     # 料金履歴（自動生成）
+└── .github/
+    └── workflows/
+        └── price_check.yml # GitHub Actions 定義
+```
+
+---
+
+## 🚀 セットアップ手順
+
+### 1. GitHubリポジトリを作成
+
+1. [github.com](https://github.com) にログイン
+2. 右上「+」→「New repository」
+3. リポジトリ名: `agoda-monitor`（何でもOK）
+4. **Private** を選択（予約情報を含むため）
+5. 「Create repository」をクリック
+
+### 2. ファイルをアップロード
+
+```bash
+git clone https://github.com/あなたのユーザー名/agoda-monitor.git
+cd agoda-monitor
+
+# ダウンロードしたファイルをフォルダに配置して:
+git add .
+git commit -m "initial commit"
+git push
+```
+
+または GitHubのWebUIから直接アップロードも可能。
+
+### 3. bookings.json を編集
+
+予約情報を入力します。AgodaのURLは**日程・部屋タイプが選択された状態のURL**を使用してください。
+
+```json
+[
+  {
+    "id": "booking_001",           // 任意のユニークID
+    "hotel": "ホテル名",
+    "checkin": "2026-08-01",
+    "checkout": "2026-08-03",
+    "room": "部屋タイプ",
+    "booked_price": 45000,         // 予約時の金額（円）
+    "threshold": 2000,             // この金額以上安くなったら通知
+    "url": "https://www.agoda.com/..." // AgodaのURL
+  }
+]
+```
+
+### 4. Gmailのアプリパスワードを取得
+
+1. Googleアカウント → [セキュリティ](https://myaccount.google.com/security)
+2. 「2段階認証プロセス」を有効化
+3. 「アプリパスワード」を検索 → 新規作成
+4. 生成された16桁のパスワードをメモ
+
+### 5. GitHub Secrets を設定
+
+1. GitHubリポジトリ → 「Settings」→「Secrets and variables」→「Actions」
+2. 「New repository secret」で以下3つを追加:
+
+| Name | Value |
+|------|-------|
+| `GMAIL_USER` | 送信元Gmailアドレス（例: yourname@gmail.com） |
+| `GMAIL_APP_PASSWORD` | 手順4で取得した16桁パスワード |
+| `NOTIFY_TO` | 通知先メールアドレス（同じでもOK） |
+
+### 6. 動作確認
+
+1. GitHubリポジトリ → 「Actions」タブ
+2. 「Agoda Price Monitor」→「Run workflow」→「Run workflow」
+3. 緑のチェックマークが出れば成功！
+
+---
+
+## ⏰ 実行スケジュール
+
+デフォルトでは **1日3回**（朝7時・昼13時・夜20時 JST）自動実行されます。
+
+変更する場合は `.github/workflows/price_check.yml` の `cron` を編集してください。
+
+```yaml
+# 毎時チェックしたい場合:
+- cron: '0 * * * *'
+```
+
+---
+
+## ⚠️ 注意事項
+
+- Agodaの利用規約では自動スクレイピングは禁止されています。このツールは**個人的な用途のみ**に使用してください。
+- サイトの構造変更により料金取得に失敗する場合があります。その際は `checker.py` のセレクターを更新してください。
+- GitHub Actionsは無料枠で月2,000分まで利用可能（このスクリプトは1回約3〜5分）。
+
+---
+
+## 🔧 トラブルシューティング
+
+**料金が取得できない場合:**
+Agodaはログインや検索条件によって表示が変わります。ブラウザの開発者ツールで実際のセレクターを確認し、`checker.py` の `selectors` リストを更新してください。
+
+**メールが届かない場合:**
+- Gmailのアプリパスワードが正しいか確認
+- 迷惑メールフォルダを確認
+- GitHub Actionsのログでエラーを確認
+
+name: Agoda Price Monitor
+
+on:
+  schedule:
+    # 毎日 7:00, 13:00, 20:00 (JST) に実行
+    # JST = UTC+9 なので UTC で指定
+    - cron: '0 22 * * *'   # 07:00 JST
+    - cron: '0 4 * * *'    # 13:00 JST
+    - cron: '0 11 * * *'   # 20:00 JST
+  workflow_dispatch:       # 手動実行も可能
+
+jobs:
+  check-prices:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 依存パッケージをインストール
+        run: |
+          pip install playwright
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: 料金チェックを実行
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTIFY_TO: ${{ secrets.NOTIFY_TO }}
+        run: python checker.py
+
+      - name: 価格履歴をコミット（変更がある場合）
+        run: |
+          git config user.name "agoda-bot"
+          git config user.email "bot@github.com"
+          git add prices_history.json
+          git diff --cached --quiet || git commit -m "chore: update price history [skip ci]"
+          git push
